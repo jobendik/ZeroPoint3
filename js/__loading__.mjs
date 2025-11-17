@@ -20,7 +20,7 @@ import { script } from './playcanvas-stable.min.mjs';
         css = document.createElement('style');
         css.id = 'loading-screen-styles';
         css.textContent = [
-            ".pc-loading-root{position:fixed;inset:0;display:grid;place-items:center;background:url('https://playcanvas.com/api/assets/253949683/file/background.png?branchId=1df39a00-470f-4317-94ca-d503d45533c7') center/cover no-repeat;z-index:9999;transition:opacity .5s ease;font-family:system-ui,-apple-system,sans-serif}",
+            ".pc-loading-root{position:fixed;inset:0;display:grid;place-items:center;background:linear-gradient(135deg,#1d292c 0%,#2a3f47 100%);z-index:9999;transition:opacity .5s ease;font-family:system-ui,-apple-system,sans-serif}",
             ".pc-loading-box{text-align:center;background:rgba(0,0,0,.55);padding:24px 32px;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);backdrop-filter:blur(10px)}",
             ".pc-loading-logo{width:140px;height:auto;margin-bottom:16px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.6))}",
             ".pc-loading-text{font:600 16px/1.4 system-ui,sans-serif;color:#e9eef5;margin:8px 0;text-shadow:0 1px 3px rgba(0,0,0,.5)}",
@@ -33,7 +33,7 @@ import { script } from './playcanvas-stable.min.mjs';
         root = document.createElement('div');
         root.className = 'pc-loading-root';
         root.id = 'pc-loading-screen';
-        root.innerHTML = '<div class="pc-loading-box">' + '<img class="pc-loading-logo" ' + 'src="https://playcanvas.com/api/assets/251041069/file/logo.png?branchId=1df39a00-470f-4317-94ca-d503d45533c7" ' + 'alt="Game Logo" />' + '<div class="pc-loading-text" id="pcText">Loading… 0%</div>' + '<div class="pc-loading-bar">' + '<div class="pc-loading-fill" id="pcFill"></div>' + '</div>' + '</div>';
+        root.innerHTML = '<div class="pc-loading-box">' + '<img class="pc-loading-logo" ' + 'src="./logo.png" ' + 'alt="Game Logo" />' + '<div class="pc-loading-text" id="pcText">Loading… 0%</div>' + '<div class="pc-loading-bar">' + '<div class="pc-loading-fill" id="pcFill"></div>' + '</div>' + '</div>';
         document.body.appendChild(root);
         text = root.querySelector('#pcText');
         fill = root.querySelector('#pcFill');
