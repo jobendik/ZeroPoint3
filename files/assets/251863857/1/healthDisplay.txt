@@ -1,0 +1,18 @@
+var HealthDisplay = pc.createScript('healthDisplay');
+
+// initialize code called once per entity
+HealthDisplay.prototype.initialize = function() {
+
+};
+
+// update code called every frame
+HealthDisplay.prototype.update = function(dt) {
+
+};
+
+// uncomment the swap method to enable hot-reloading for this script
+// update the method body to copy state from the old instance
+// HealthDisplay.prototype.swap = function(old) { };
+
+// learn more about scripting here:
+// https://developer.playcanvas.com/user-manual/scripting/

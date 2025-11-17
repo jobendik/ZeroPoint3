@@ -1,0 +1,449 @@
+var KillFeed = pc.createScript('killFeed');
+
+// Kill Feed Elements
+KillFeed.attributes.add('kill1', { type: 'entity', title: 'Kill Entry 1' });
+KillFeed.attributes.add('kill2', { type: 'entity', title: 'Kill Entry 2' });
+KillFeed.attributes.add('kill3', { type: 'entity', title: 'Kill Entry 3' });
+KillFeed.attributes.add('kill4', { type: 'entity', title: 'Kill Entry 4' });
+
+// Visual Settings
+KillFeed.attributes.add('fontSize', { type: 'number', default: 18, title: 'Font Size' });
+KillFeed.attributes.add('entryHeight', { type: 'number', default: 25, title: 'Entry Height' });
+KillFeed.attributes.add('maxEntries', { type: 'number', default: 4, title: 'Max Visible Entries' });
+KillFeed.attributes.add('entryLifetime', { type: 'number', default: 8.0, title: 'Entry Lifetime (seconds)' });
+
+// Color Settings
+KillFeed.attributes.add('killerColor', { type: 'rgb', default: [1, 1, 1], title: 'Killer Name Color' });
+KillFeed.attributes.add('victimColor', { type: 'rgb', default: [0.8, 0.8, 0.8], title: 'Victim Name Color' });
+KillFeed.attributes.add('playerKillColor', { type: 'rgb', default: [0, 1, 0], title: 'Player Kill Color' });
+KillFeed.attributes.add('playerDeathColor', { type: 'rgb', default: [1, 0, 0], title: 'Player Death Color' });
+KillFeed.attributes.add('backgroundColor', { type: 'rgb', default: [0, 0, 0], title: 'Background Color' });
+
+// Animation Settings
+KillFeed.attributes.add('slideInSpeed', { type: 'number', default: 6.0, title: 'Slide In Speed' });
+KillFeed.attributes.add('fadeOutSpeed', { type: 'number', default: 3.0, title: 'Fade Out Speed' });
+KillFeed.attributes.add('enableSlideAnimation', { type: 'boolean', default: true, title: 'Enable Slide Animation' });
+
+// Display Settings
+KillFeed.attributes.add('showWeaponIcons', { type: 'boolean', default: true, title: 'Show Weapon Icons' });
+KillFeed.attributes.add('showKillStreaks', { type: 'boolean', default: true, title: 'Show Kill Streaks' });
+KillFeed.attributes.add('compactMode', { type: 'boolean', default: false, title: 'Compact Mode' });
+
+KillFeed.prototype.initialize = function() {
+    // Kill feed entries storage
+    this.killEntries = [];
+    this.entryElements = [];
+    
+    // HUD Manager reference
+    this.hudManager = null;
+    
+    // Player tracking for special highlighting
+    this.playerName = 'Player';
+    this.killStreaks = new Map(); // Track kill streaks per player
+    
+    this.initializeElements();
+    this.clearAllEntries();
+    
+    // Listen for death events
+    this.app.on('entity:died', this.onEntityDied, this);
+    
+    console.log('[KillFeed] Initialized');
+};
+
+KillFeed.prototype.setHUDManager = function(hudManager) {
+    this.hudManager = hudManager;
+    
+    // Get player name from player entity
+    if (hudManager && hudManager.playerEntity) {
+        this.playerName = hudManager.playerEntity.name || 'Player';
+    }
+};
+
+KillFeed.prototype.initializeElements = function() {
+    // Store references to kill entry elements
+    const entries = [this.kill1, this.kill2, this.kill3, this.kill4];
+    
+    entries.forEach((entry, index) => {
+        if (entry && entry.element) {
+            // Setup text element
+            entry.element.fontSize = this.fontSize;
+            entry.element.color = new pc.Color(1, 1, 1);
+            entry.element.text = '';
+            
+            // Setup background if available
+            const background = entry.findByName('Background');
+            if (background && background.element) {
+                background.element.color = new pc.Color(
+                    this.backgroundColor[0],
+                    this.backgroundColor[1],
+                    this.backgroundColor[2],
+                    0.8
+                );
+                background.element.width = 300; // Default width
+                background.element.height = this.entryHeight;
+            }
+            
+            // Hide initially
+            entry.enabled = false;
+            
+            this.entryElements.push({
+                entity: entry,
+                background: background,
+                isActive: false,
+                timestamp: 0,
+                killData: null
+            });
+        }
+    });
+};
+
+KillFeed.prototype.update = function(dt) {
+    // Update entry lifetimes and animations
+    this.updateEntries(dt);
+    
+    // Clean up expired entries
+    this.cleanupExpiredEntries();
+};
+
+KillFeed.prototype.addKill = function(killerName, victimName, weaponType, isHeadshot) {
+    killerName = killerName || 'Unknown';
+    victimName = victimName || 'Unknown';
+    weaponType = weaponType || '';
+    isHeadshot = isHeadshot || false;
+    
+    // Update kill streaks
+    this.updateKillStreaks(killerName, victimName);
+    
+    // Create kill entry data
+    const killData = {
+        killer: killerName,
+        victim: victimName,
+        weapon: weaponType,
+        isHeadshot: isHeadshot,
+        timestamp: performance.now() / 1000,
+        isPlayerKill: killerName === this.playerName,
+        isPlayerDeath: victimName === this.playerName,
+        killStreak: this.killStreaks.get(killerName) || 0
+    };
+    
+    // Add to entries queue
+    this.killEntries.unshift(killData);
+    
+    // Limit entries to max
+    if (this.killEntries.length > this.maxEntries) {
+        this.killEntries = this.killEntries.slice(0, this.maxEntries);
+    }
+    
+    // Update display
+    this.updateDisplay();
+    
+    console.log(`[KillFeed] Kill added: ${killerName} -> ${victimName} (weapon: ${weaponType})`);
+};
+
+KillFeed.prototype.updateKillStreaks = function(killerName, victimName) {
+    if (!this.showKillStreaks) return;
+    
+    // Increment killer's streak
+    const currentStreak = this.killStreaks.get(killerName) || 0;
+    this.killStreaks.set(killerName, currentStreak + 1);
+    
+    // Reset victim's streak
+    if (this.killStreaks.has(victimName)) {
+        this.killStreaks.set(victimName, 0);
+    }
+    
+    // Announce kill streaks for player
+    if (killerName === this.playerName) {
+        const streak = this.killStreaks.get(killerName);
+        this.announceKillStreak(streak);
+    }
+};
+
+KillFeed.prototype.announceKillStreak = function(streak) {
+    const streakMessages = {
+        3: 'TRIPLE KILL!',
+        5: 'KILLING SPREE!',
+        7: 'RAMPAGE!',
+        10: 'UNSTOPPABLE!',
+        15: 'GODLIKE!'
+    };
+    
+    if (streakMessages[streak]) {
+        // Show streak announcement (could be expanded to show in UI)
+        console.log(`[KillFeed] Kill streak: ${streakMessages[streak]}`);
+        
+        // Fire event for other systems to handle
+        this.app.fire('killstreak:achieved', {
+            streak: streak,
+            message: streakMessages[streak]
+        });
+    }
+};
+
+KillFeed.prototype.updateDisplay = function() {
+    // Update each entry element with current kill data
+    for (let i = 0; i < this.entryElements.length; i++) {
+        const element = this.entryElements[i];
+        const killData = this.killEntries[i];
+        
+        if (killData && !element.isActive) {
+            // Show new entry
+            this.showEntry(element, killData, i);
+        } else if (!killData && element.isActive) {
+            // Hide expired entry
+            this.hideEntry(element);
+        }
+    }
+};
+
+KillFeed.prototype.showEntry = function(element, killData, index) {
+    if (!element.entity) return;
+    
+    element.isActive = true;
+    element.timestamp = killData.timestamp;
+    element.killData = killData;
+    
+    // Generate kill text
+    const killText = this.generateKillText(killData);
+    element.entity.element.text = killText;
+    
+    // Set colors based on kill type
+    const textColor = this.getKillTextColor(killData);
+    element.entity.element.color = textColor;
+    
+    // Show the entry
+    element.entity.enabled = true;
+    
+    // Animate entry appearance
+    if (this.enableSlideAnimation) {
+        this.animateEntryIn(element, index);
+    }
+};
+
+KillFeed.prototype.generateKillText = function(killData) {
+    let text = killData.killer;
+    
+    // Add weapon info if available
+    if (killData.weapon && this.showWeaponIcons) {
+        const weaponSymbols = {
+            'pistol': '🔫',
+            'machinegun': '🔫',
+            'shotgun': '💥',
+            'melee': '🗡️'
+        };
+        const weaponSymbol = weaponSymbols[killData.weapon] || '💀';
+        text += ` ${weaponSymbol} `;
+    } else {
+        text += ' killed ';
+    }
+    
+    text += killData.victim;
+    
+    // Add headshot indicator
+    if (killData.isHeadshot) {
+        text += ' 🎯';
+    }
+    
+    // Add kill streak info
+    if (this.showKillStreaks && killData.killStreak > 2) {
+        text += ` (${killData.killStreak}x)`;
+    }
+    
+    // Compact mode - shorter text
+    if (this.compactMode) {
+        text = `${killData.killer} > ${killData.victim}`;
+    }
+    
+    return text;
+};
+
+KillFeed.prototype.getKillTextColor = function(killData) {
+    if (killData.isPlayerKill) {
+        // Player got a kill - green
+        return new pc.Color(
+            this.playerKillColor[0],
+            this.playerKillColor[1],
+            this.playerKillColor[2]
+        );
+    } else if (killData.isPlayerDeath) {
+        // Player died - red
+        return new pc.Color(
+            this.playerDeathColor[0],
+            this.playerDeathColor[1],
+            this.playerDeathColor[2]
+        );
+    } else {
+        // Normal kill - white
+        return new pc.Color(
+            this.killerColor[0],
+            this.killerColor[1],
+            this.killerColor[2]
+        );
+    }
+};
+
+KillFeed.prototype.animateEntryIn = function(element, index) {
+    if (!element.entity) return;
+    
+    // Start from the right side of screen
+    const originalPos = element.entity.getLocalPosition().clone();
+    const startPos = originalPos.clone();
+    startPos.x += 200; // Start off-screen to the right
+    
+    element.entity.setLocalPosition(startPos);
+    element.entity.element.opacity = 0;
+    
+    // Animate sliding in from the right
+    const animationDuration = 0.3;
+    const startTime = performance.now();
+    
+    const animate = () => {
+        const elapsed = (performance.now() - startTime) / 1000;
+        const progress = Math.min(elapsed / animationDuration, 1);
+        
+        // Ease-out animation
+        const easeProgress = 1 - Math.pow(1 - progress, 3);
+        
+        // Interpolate position
+        const currentPos = new pc.Vec3().lerp(startPos, originalPos, easeProgress);
+        element.entity.setLocalPosition(currentPos);
+        
+        // Fade in
+        element.entity.element.opacity = progress;
+        
+        if (progress < 1) {
+            requestAnimationFrame(animate);
+        }
+    };
+    
+    animate();
+};
+
+KillFeed.prototype.hideEntry = function(element) {
+    element.isActive = false;
+    element.timestamp = 0;
+    element.killData = null;
+    
+    if (element.entity) {
+        element.entity.enabled = false;
+        element.entity.element.text = '';
+        element.entity.element.opacity = 1;
+    }
+};
+
+KillFeed.prototype.updateEntries = function(dt) {
+    const currentTime = performance.now() / 1000;
+    
+    for (const element of this.entryElements) {
+        if (!element.isActive) continue;
+        
+        const age = currentTime - element.timestamp;
+        const remainingTime = this.entryLifetime - age;
+        
+        // Start fading out in the last 2 seconds
+        if (remainingTime < 2 && remainingTime > 0) {
+            const fadeProgress = 1 - (remainingTime / 2);
+            const opacity = 1 - fadeProgress;
+            
+            if (element.entity && element.entity.element) {
+                element.entity.element.opacity = Math.max(0, opacity);
+            }
+        }
+    }
+};
+
+KillFeed.prototype.cleanupExpiredEntries = function() {
+    const currentTime = performance.now() / 1000;
+    
+    // Remove expired entries from data array
+    this.killEntries = this.killEntries.filter(entry => {
+        const age = currentTime - entry.timestamp;
+        return age < this.entryLifetime;
+    });
+    
+    // Hide elements for expired entries
+    for (const element of this.entryElements) {
+        if (element.isActive && element.killData) {
+            const age = currentTime - element.timestamp;
+            if (age >= this.entryLifetime) {
+                this.hideEntry(element);
+            }
+        }
+    }
+    
+    // Rebuild display to handle shifting
+    this.updateDisplay();
+};
+
+KillFeed.prototype.clearAllEntries = function() {
+    this.killEntries = [];
+    
+    for (const element of this.entryElements) {
+        this.hideEntry(element);
+    }
+    
+    // Reset kill streaks
+    this.killStreaks.clear();
+};
+
+// Event handlers
+KillFeed.prototype.onEntityDied = function(data) {
+    if (!data) return;
+    
+    const killerName = data.attacker ? data.attacker.name : 'Unknown';
+    const victimName = data.entity ? data.entity.name : 'Unknown';
+    
+    // Try to determine weapon type from attacker's weapon system
+    let weaponType = '';
+    if (data.attacker && data.attacker.script && data.attacker.script.weaponSystem) {
+        weaponType = data.attacker.script.weaponSystem.currentWeapon;
+    }
+    
+    this.addKill(killerName, victimName, weaponType, false);
+};
+
+// Public methods for manual control
+KillFeed.prototype.addTestKill = function() {
+    const killers = ['Player', 'Enemy1', 'Enemy2', 'Bot'];
+    const victims = ['Player', 'Enemy1', 'Enemy2', 'Bot'];
+    const weapons = ['pistol', 'machinegun', 'shotgun'];
+    
+    const killer = killers[Math.floor(Math.random() * killers.length)];
+    let victim = victims[Math.floor(Math.random() * victims.length)];
+    
+    // Ensure killer and victim are different
+    while (victim === killer) {
+        victim = victims[Math.floor(Math.random() * victims.length)];
+    }
+    
+    const weapon = weapons[Math.floor(Math.random() * weapons.length)];
+    const isHeadshot = Math.random() < 0.3;
+    
+    this.addKill(killer, victim, weapon, isHeadshot);
+    console.log('[KillFeed] Test kill added');
+};
+
+KillFeed.prototype.simulateKillFeed = function() {
+    console.log('[KillFeed] Simulating kill feed...');
+    
+    // Add several kills over time
+    for (let i = 0; i < 6; i++) {
+        setTimeout(() => {
+            this.addTestKill();
+        }, i * 1000);
+    }
+};
+
+// Get kill statistics
+KillFeed.prototype.getKillStats = function() {
+    const playerKills = this.killEntries.filter(entry => entry.isPlayerKill).length;
+    const playerDeaths = this.killEntries.filter(entry => entry.isPlayerDeath).length;
+    const playerStreak = this.killStreaks.get(this.playerName) || 0;
+    
+    return {
+        playerKills: playerKills,
+        playerDeaths: playerDeaths,
+        playerStreak: playerStreak,
+        totalEntries: this.killEntries.length
+    };
+};

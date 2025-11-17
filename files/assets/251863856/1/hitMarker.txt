@@ -1,0 +1,422 @@
+var HitMarker = pc.createScript('hitMarker');
+
+// Hit Marker Elements
+HitMarker.attributes.add('hitMarkerIcon', { type: 'entity', title: 'Hit Marker Icon' });
+HitMarker.attributes.add('criticalHitIcon', { type: 'entity', title: 'Critical Hit Icon (optional)' });
+HitMarker.attributes.add('killConfirmIcon', { type: 'entity', title: 'Kill Confirmation Icon (optional)' });
+
+// Hit Marker Texture Assets
+HitMarker.attributes.add('hitMarkerTexture', { type: 'asset', assetType: 'texture', title: 'Hit Marker Texture' });
+HitMarker.attributes.add('criticalHitTexture', { type: 'asset', assetType: 'texture', title: 'Critical Hit Texture' });
+HitMarker.attributes.add('killConfirmTexture', { type: 'asset', assetType: 'texture', title: 'Kill Confirm Texture' });
+
+// Visual Settings
+HitMarker.attributes.add('hitMarkerSize', { type: 'number', default: 32, title: 'Hit Marker Size' });
+HitMarker.attributes.add('criticalHitSize', { type: 'number', default: 48, title: 'Critical Hit Size' });
+HitMarker.attributes.add('killConfirmSize', { type: 'number', default: 64, title: 'Kill Confirm Size' });
+
+// Color Settings
+HitMarker.attributes.add('normalHitColor', { type: 'rgb', default: [1, 1, 1], title: 'Normal Hit Color' });
+HitMarker.attributes.add('criticalHitColor', { type: 'rgb', default: [1, 0.5, 0], title: 'Critical Hit Color' });
+HitMarker.attributes.add('killConfirmColor', { type: 'rgb', default: [1, 0, 0], title: 'Kill Confirm Color' });
+
+// Animation Settings
+HitMarker.attributes.add('displayDuration', { type: 'number', default: 0.3, title: 'Display Duration (seconds)' });
+HitMarker.attributes.add('fadeInTime', { type: 'number', default: 0.05, title: 'Fade In Time' });
+HitMarker.attributes.add('fadeOutTime', { type: 'number', default: 0.15, title: 'Fade Out Time' });
+HitMarker.attributes.add('animateScale', { type: 'boolean', default: true, title: 'Animate Scale' });
+HitMarker.attributes.add('scaleMultiplier', { type: 'number', default: 1.3, title: 'Scale Animation Multiplier' });
+
+// Behavior Settings
+HitMarker.attributes.add('criticalHitThreshold', { type: 'number', default: 50, title: 'Critical Hit Damage Threshold' });
+HitMarker.attributes.add('enableSounds', { type: 'boolean', default: true, title: 'Enable Hit Sounds' });
+HitMarker.attributes.add('stackHitMarkers', { type: 'boolean', default: false, title: 'Stack Multiple Hit Markers' });
+HitMarker.attributes.add('maxStackedMarkers', { type: 'number', default: 3, title: 'Max Stacked Markers' });
+
+HitMarker.prototype.initialize = function() {
+    // State tracking
+    this.isActive = false;
+    this.currentAnimation = null;
+    this.activeMarkers = [];
+    
+    // HUD Manager reference
+    this.hudManager = null;
+    
+    // Hit statistics
+    this.hitCount = 0;
+    this.criticalHitCount = 0;
+    this.killCount = 0;
+    
+    this.initializeElements();
+    this.hideAllMarkers();
+    
+    // Listen for combat events
+    this.app.on('entity:damaged', this.onEntityDamaged, this);
+    this.app.on('entity:died', this.onEntityDied, this);
+    
+    console.log('[HitMarker] Initialized');
+};
+
+HitMarker.prototype.setHUDManager = function(hudManager) {
+    this.hudManager = hudManager;
+};
+
+HitMarker.prototype.initializeElements = function() {
+    // Initialize normal hit marker
+    if (this.hitMarkerIcon && this.hitMarkerIcon.element) {
+        this.hitMarkerIcon.element.width = this.hitMarkerSize;
+        this.hitMarkerIcon.element.height = this.hitMarkerSize;
+        
+        if (this.hitMarkerTexture) {
+            this.hitMarkerIcon.element.texture = this.hitMarkerTexture.resource;
+        }
+        
+        this.hitMarkerIcon.element.color = new pc.Color(
+            this.normalHitColor[0],
+            this.normalHitColor[1],
+            this.normalHitColor[2]
+        );
+        
+        this.hitMarkerIcon.enabled = false;
+    }
+    
+    // Initialize critical hit marker
+    if (this.criticalHitIcon && this.criticalHitIcon.element) {
+        this.criticalHitIcon.element.width = this.criticalHitSize;
+        this.criticalHitIcon.element.height = this.criticalHitSize;
+        
+        if (this.criticalHitTexture) {
+            this.criticalHitIcon.element.texture = this.criticalHitTexture.resource;
+        } else if (this.hitMarkerTexture) {
+            this.criticalHitIcon.element.texture = this.hitMarkerTexture.resource;
+        }
+        
+        this.criticalHitIcon.element.color = new pc.Color(
+            this.criticalHitColor[0],
+            this.criticalHitColor[1],
+            this.criticalHitColor[2]
+        );
+        
+        this.criticalHitIcon.enabled = false;
+    }
+    
+    // Initialize kill confirmation marker
+    if (this.killConfirmIcon && this.killConfirmIcon.element) {
+        this.killConfirmIcon.element.width = this.killConfirmSize;
+        this.killConfirmIcon.element.height = this.killConfirmSize;
+        
+        if (this.killConfirmTexture) {
+            this.killConfirmIcon.element.texture = this.killConfirmTexture.resource;
+        } else if (this.hitMarkerTexture) {
+            this.killConfirmIcon.element.texture = this.hitMarkerTexture.resource;
+        }
+        
+        this.killConfirmIcon.element.color = new pc.Color(
+            this.killConfirmColor[0],
+            this.killConfirmColor[1],
+            this.killConfirmColor[2]
+        );
+        
+        this.killConfirmIcon.enabled = false;
+    }
+};
+
+HitMarker.prototype.update = function(dt) {
+    // Clean up expired markers if using stacking
+    if (this.stackHitMarkers) {
+        this.cleanupExpiredMarkers();
+    }
+};
+
+HitMarker.prototype.showHitMarker = function(damageAmount, isCritical, isKill) {
+    damageAmount = damageAmount || 0;
+    isCritical = isCritical || (damageAmount >= this.criticalHitThreshold);
+    isKill = isKill || false;
+    
+    // Determine which marker to show
+    let markerType = 'normal';
+    if (isKill) {
+        markerType = 'kill';
+        this.killCount++;
+    } else if (isCritical) {
+        markerType = 'critical';
+        this.criticalHitCount++;
+    } else {
+        this.hitCount++;
+    }
+    
+    if (this.stackHitMarkers) {
+        this.showStackedMarker(markerType, damageAmount);
+    } else {
+        this.showSingleMarker(markerType);
+    }
+    
+    // Play hit sound
+    if (this.enableSounds) {
+        this.playHitSound(markerType);
+    }
+    
+    console.log(`[HitMarker] ${markerType} hit marker shown (damage: ${damageAmount})`);
+};
+
+HitMarker.prototype.showSingleMarker = function(markerType) {
+    // Cancel any existing animation
+    if (this.currentAnimation) {
+        clearTimeout(this.currentAnimation);
+        this.currentAnimation = null;
+    }
+    
+    const markerIcon = this.getMarkerIcon(markerType);
+    if (!markerIcon) return;
+    
+    // Reset and show the marker
+    this.resetMarker(markerIcon);
+    markerIcon.enabled = true;
+    this.isActive = true;
+    
+    // Animate the marker
+    this.animateMarker(markerIcon, markerType);
+};
+
+HitMarker.prototype.showStackedMarker = function(markerType, damageAmount) {
+    // Limit number of stacked markers
+    if (this.activeMarkers.length >= this.maxStackedMarkers) {
+        this.activeMarkers.shift(); // Remove oldest
+    }
+    
+    // Create marker data
+    const markerData = {
+        type: markerType,
+        damage: damageAmount,
+        startTime: performance.now(),
+        element: this.createStackedMarkerElement(markerType)
+    };
+    
+    this.activeMarkers.push(markerData);
+    this.animateStackedMarker(markerData);
+};
+
+HitMarker.prototype.createStackedMarkerElement = function(markerType) {
+    // For simplicity, we'll reuse the existing elements and just offset them
+    const baseIcon = this.getMarkerIcon(markerType);
+    if (!baseIcon) return null;
+    
+    // Calculate offset for stacking
+    const stackOffset = this.activeMarkers.length * 20;
+    
+    baseIcon.enabled = true;
+    
+    // Apply stacking offset
+    const originalPos = baseIcon.getLocalPosition();
+    baseIcon.setLocalPosition(originalPos.x + stackOffset, originalPos.y, originalPos.z);
+    
+    return baseIcon;
+};
+
+HitMarker.prototype.getMarkerIcon = function(markerType) {
+    switch (markerType) {
+        case 'critical':
+            return this.criticalHitIcon || this.hitMarkerIcon;
+        case 'kill':
+            return this.killConfirmIcon || this.criticalHitIcon || this.hitMarkerIcon;
+        case 'normal':
+        default:
+            return this.hitMarkerIcon;
+    }
+};
+
+HitMarker.prototype.resetMarker = function(markerIcon) {
+    if (!markerIcon || !markerIcon.element) return;
+    
+    // Reset opacity and scale
+    markerIcon.element.opacity = 0;
+    markerIcon.setLocalScale(1, 1, 1);
+};
+
+HitMarker.prototype.animateMarker = function(markerIcon, markerType) {
+    if (!markerIcon || !markerIcon.element) return;
+    
+    const startTime = performance.now();
+    const totalDuration = this.displayDuration * 1000;
+    const fadeInDuration = this.fadeInTime * 1000;
+    const fadeOutDuration = this.fadeOutTime * 1000;
+    const fadeOutStart = totalDuration - fadeOutDuration;
+    
+    const originalScale = markerIcon.getLocalScale().clone();
+    const targetScale = this.animateScale ? 
+        originalScale.clone().scale(this.scaleMultiplier) : 
+        originalScale.clone();
+    
+    const animate = () => {
+        const elapsed = performance.now() - startTime;
+        const progress = elapsed / totalDuration;
+        
+        if (elapsed >= totalDuration) {
+            // Animation complete
+            this.hideMarker(markerIcon);
+            this.isActive = false;
+            this.currentAnimation = null;
+            return;
+        }
+        
+        // Calculate opacity
+        let opacity;
+        if (elapsed < fadeInDuration) {
+            // Fade in
+            opacity = elapsed / fadeInDuration;
+        } else if (elapsed > fadeOutStart) {
+            // Fade out
+            const fadeProgress = (elapsed - fadeOutStart) / fadeOutDuration;
+            opacity = 1 - fadeProgress;
+        } else {
+            // Full visibility
+            opacity = 1;
+        }
+        
+        // Calculate scale
+        let scale;
+        if (this.animateScale && elapsed < fadeInDuration) {
+            const scaleProgress = elapsed / fadeInDuration;
+            scale = pc.math.lerp(targetScale.x, originalScale.x, scaleProgress);
+        } else {
+            scale = originalScale.x;
+        }
+        
+        // Apply animation
+        markerIcon.element.opacity = opacity;
+        markerIcon.setLocalScale(scale, scale, scale);
+        
+        // Continue animation
+        requestAnimationFrame(animate);
+    };
+    
+    // Start animation
+    animate();
+};
+
+HitMarker.prototype.animateStackedMarker = function(markerData) {
+    // Similar to single marker but with different timing and offset handling
+    const markerIcon = markerData.element;
+    if (!markerIcon) return;
+    
+    this.animateMarker(markerIcon, markerData.type);
+};
+
+HitMarker.prototype.cleanupExpiredMarkers = function() {
+    const now = performance.now();
+    const expiredDuration = this.displayDuration * 1000;
+    
+    this.activeMarkers = this.activeMarkers.filter(marker => {
+        const age = now - marker.startTime;
+        if (age > expiredDuration) {
+            if (marker.element) {
+                marker.element.enabled = false;
+            }
+            return false;
+        }
+        return true;
+    });
+};
+
+HitMarker.prototype.hideMarker = function(markerIcon) {
+    if (markerIcon) {
+        markerIcon.enabled = false;
+        markerIcon.element.opacity = 0;
+    }
+};
+
+HitMarker.prototype.hideAllMarkers = function() {
+    this.hideMarker(this.hitMarkerIcon);
+    this.hideMarker(this.criticalHitIcon);
+    this.hideMarker(this.killConfirmIcon);
+    
+    this.activeMarkers.forEach(marker => {
+        if (marker.element) {
+            marker.element.enabled = false;
+        }
+    });
+    
+    this.activeMarkers = [];
+    this.isActive = false;
+};
+
+HitMarker.prototype.playHitSound = function(markerType) {
+    let soundName;
+    
+    switch (markerType) {
+        case 'kill':
+            soundName = 'kill_confirm';
+            break;
+        case 'critical':
+            soundName = 'critical_hit';
+            break;
+        case 'normal':
+        default:
+            soundName = 'hit_confirm';
+            break;
+    }
+    
+    this.app.fire('audio:play', {
+        sound: soundName,
+        volume: 0.7
+    });
+};
+
+// Event handlers
+HitMarker.prototype.onEntityDamaged = function(data) {
+    // Only show hit markers for damage caused by the player
+    if (!this.hudManager) return;
+    
+    const playerWeaponSystem = this.hudManager.getPlayerWeaponSystem();
+    if (!playerWeaponSystem) return;
+    
+    // Check if the damage was caused by the player
+    if (data.attacker === this.hudManager.playerEntity) {
+        const isCritical = data.damage >= this.criticalHitThreshold;
+        this.showHitMarker(data.damage, isCritical, false);
+    }
+};
+
+HitMarker.prototype.onEntityDied = function(data) {
+    // Show kill confirmation if player caused the death
+    if (!this.hudManager) return;
+    
+    if (data.attacker === this.hudManager.playerEntity) {
+        this.showHitMarker(0, false, true);
+    }
+};
+
+// Public methods
+HitMarker.prototype.getHitStats = function() {
+    return {
+        totalHits: this.hitCount + this.criticalHitCount,
+        normalHits: this.hitCount,
+        criticalHits: this.criticalHitCount,
+        kills: this.killCount
+    };
+};
+
+HitMarker.prototype.resetHitStats = function() {
+    this.hitCount = 0;
+    this.criticalHitCount = 0;
+    this.killCount = 0;
+};
+
+// Manual trigger method for testing
+HitMarker.prototype.testHitMarker = function(markerType) {
+    markerType = markerType || 'normal';
+    
+    switch (markerType) {
+        case 'critical':
+            this.showHitMarker(75, true, false);
+            break;
+        case 'kill':
+            this.showHitMarker(100, false, true);
+            break;
+        default:
+            this.showHitMarker(25, false, false);
+            break;
+    }
+    
+    console.log(`[HitMarker] Test ${markerType} hit marker triggered`);
+};

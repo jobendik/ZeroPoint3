@@ -1,0 +1,444 @@
+var Minimap = pc.createScript('minimap');
+
+// Minimap Elements
+Minimap.attributes.add('minimapBackground', { type: 'entity', title: 'Minimap Background' });
+Minimap.attributes.add('minimapMask', { type: 'entity', title: 'Minimap Mask (optional)' });
+Minimap.attributes.add('playerDot', { type: 'entity', title: 'Player Dot' });
+Minimap.attributes.add('enemyDots', { type: 'entity', title: 'Enemy Dots Container' });
+
+// Minimap Textures
+Minimap.attributes.add('mapTexture', { type: 'asset', assetType: 'texture', title: 'Map Background Texture' });
+Minimap.attributes.add('maskTexture', { type: 'asset', assetType: 'texture', title: 'Circular Mask Texture' });
+
+// Size and Position Settings
+Minimap.attributes.add('minimapSize', { type: 'number', default: 150, title: 'Minimap Size (pixels)' });
+Minimap.attributes.add('playerDotSize', { type: 'number', default: 8, title: 'Player Dot Size' });
+Minimap.attributes.add('enemyDotSize', { type: 'number', default: 6, title: 'Enemy Dot Size' });
+Minimap.attributes.add('mapScale', { type: 'number', default: 0.1, title: 'World to Map Scale' });
+
+// World Bounds (for mapping world coordinates to minimap)
+Minimap.attributes.add('worldBounds', {
+    type: 'json',
+    schema: [
+        { name: 'minX', type: 'number', default: -100 },
+        { name: 'maxX', type: 'number', default: 100 },
+        { name: 'minZ', type: 'number', default: -100 },
+        { name: 'maxZ', type: 'number', default: 100 }
+    ],
+    title: 'World Bounds'
+});
+
+// Color Settings
+Minimap.attributes.add('playerColor', { type: 'rgb', default: [0, 1, 0], title: 'Player Color' });
+Minimap.attributes.add('enemyColor', { type: 'rgb', default: [1, 0, 0], title: 'Enemy Color' });
+Minimap.attributes.add('allyColor', { type: 'rgb', default: [0, 0, 1], title: 'Ally Color' });
+Minimap.attributes.add('backgroundTint', { type: 'rgb', default: [0.8, 0.8, 0.8], title: 'Background Tint' });
+
+// Display Settings
+Minimap.attributes.add('showEnemies', { type: 'boolean', default: true, title: 'Show Enemies' });
+Minimap.attributes.add('showItems', { type: 'boolean', default: false, title: 'Show Items' });
+Minimap.attributes.add('showObjectives', { type: 'boolean', default: true, title: 'Show Objectives' });
+Minimap.attributes.add('rotateWithPlayer', { type: 'boolean', default: true, title: 'Rotate with Player' });
+Minimap.attributes.add('fadeEnemiesAtDistance', { type: 'boolean', default: true, title: 'Fade Enemies at Distance' });
+Minimap.attributes.add('maxEnemyDistance', { type: 'number', default: 50, title: 'Max Enemy Visibility Distance' });
+
+// Update Settings
+Minimap.attributes.add('updateFrequency', { type: 'number', default: 10, title: 'Updates per Second' });
+Minimap.attributes.add('smoothPlayerMovement', { type: 'boolean', default: true, title: 'Smooth Player Movement' });
+
+// Behavior Settings
+Minimap.attributes.add('enableZoom', { type: 'boolean', default: false, title: 'Enable Zoom (future)' });
+Minimap.attributes.add('showPlayerDirection', { type: 'boolean', default: true, title: 'Show Player Direction' });
+
+Minimap.prototype.initialize = function() {
+    // State tracking
+    this.updateTimer = 0;
+    this.updateInterval = 1 / this.updateFrequency;
+    
+    // HUD Manager reference
+    this.hudManager = null;
+    
+    // Tracked entities
+    this.trackedEnemies = [];
+    this.enemyDotPool = [];
+    this.activeEnemyDots = [];
+    
+    // Player tracking
+    this.lastPlayerPosition = new pc.Vec3();
+    this.smoothedPlayerPosition = new pc.Vec3();
+    
+    this.initializeElements();
+    this.createEnemyDotPool();
+    this.setupMinimap();
+    
+    // Listen for entity events
+    this.app.on('entity:spawned', this.onEntitySpawned, this);
+    this.app.on('entity:died', this.onEntityDied, this);
+    
+    console.log('[Minimap] Initialized');
+};
+
+Minimap.prototype.setHUDManager = function(hudManager) {
+    this.hudManager = hudManager;
+};
+
+Minimap.prototype.initializeElements = function() {
+    // Setup minimap background
+    if (this.minimapBackground && this.minimapBackground.element) {
+        this.minimapBackground.element.width = this.minimapSize;
+        this.minimapBackground.element.height = this.minimapSize;
+        
+        if (this.mapTexture) {
+            this.minimapBackground.element.texture = this.mapTexture.resource;
+        }
+        
+        this.minimapBackground.element.color = new pc.Color(
+            this.backgroundTint[0],
+            this.backgroundTint[1],
+            this.backgroundTint[2]
+        );
+    }
+    
+    // Setup circular mask if available
+    if (this.minimapMask && this.minimapMask.element) {
+        this.minimapMask.element.width = this.minimapSize;
+        this.minimapMask.element.height = this.minimapSize;
+        
+        if (this.maskTexture) {
+            this.minimapMask.element.texture = this.maskTexture.resource;
+        }
+    }
+    
+    // Setup player dot
+    if (this.playerDot && this.playerDot.element) {
+        this.playerDot.element.width = this.playerDotSize;
+        this.playerDot.element.height = this.playerDotSize;
+        this.playerDot.element.color = new pc.Color(
+            this.playerColor[0],
+            this.playerColor[1],
+            this.playerColor[2]
+        );
+        
+        // Center the player dot
+        this.playerDot.element.anchor = new pc.Vec4(0.5, 0.5, 0.5, 0.5);
+    }
+};
+
+Minimap.prototype.createEnemyDotPool = function() {
+    // Create a pool of enemy dots for performance
+    const poolSize = 20; // Max 20 enemies on minimap
+    
+    for (let i = 0; i < poolSize; i++) {
+        const enemyDot = new pc.Entity(`EnemyDot_${i}`);
+        enemyDot.addComponent('element', {
+            type: pc.ELEMENTTYPE_IMAGE,
+            anchor: new pc.Vec4(0.5, 0.5, 0.5, 0.5),
+            pivot: new pc.Vec2(0.5, 0.5),
+            width: this.enemyDotSize,
+            height: this.enemyDotSize,
+            color: new pc.Color(this.enemyColor[0], this.enemyColor[1], this.enemyColor[2])
+        });
+        
+        if (this.enemyDots) {
+            this.enemyDots.addChild(enemyDot);
+        }
+        
+        enemyDot.enabled = false;
+        
+        this.enemyDotPool.push({
+            entity: enemyDot,
+            inUse: false,
+            trackedEntity: null
+        });
+    }
+};
+
+Minimap.prototype.setupMinimap = function() {
+    // Find all enemies and trackable entities in the scene
+    this.refreshTrackedEntities();
+    
+    // Set initial player position
+    this.updatePlayerPosition();
+};
+
+Minimap.prototype.update = function(dt) {
+    this.updateTimer += dt;
+    
+    if (this.updateTimer >= this.updateInterval) {
+        this.updateMinimap();
+        this.updateTimer = 0;
+    }
+    
+    // Smooth player movement if enabled
+    if (this.smoothPlayerMovement) {
+        this.smoothPlayerMovement(dt);
+    }
+};
+
+Minimap.prototype.updateMinimap = function() {
+    if (!this.hudManager) return;
+    
+    // Update player position and rotation
+    this.updatePlayerPosition();
+    this.updatePlayerRotation();
+    
+    // Update enemy positions
+    if (this.showEnemies) {
+        this.updateEnemyPositions();
+    }
+    
+    // Update minimap rotation if enabled
+    if (this.rotateWithPlayer) {
+        this.updateMinimapRotation();
+    }
+};
+
+Minimap.prototype.updatePlayerPosition = function() {
+    if (!this.hudManager || !this.hudManager.playerEntity) return;
+    
+    const playerPos = this.hudManager.playerEntity.getPosition();
+    
+    // Store for smoothing
+    this.lastPlayerPosition.copy(this.smoothedPlayerPosition);
+    
+    // Convert world position to minimap position
+    const minimapPos = this.worldToMinimapPosition(playerPos);
+    
+    if (this.smoothPlayerMovement) {
+        // Smooth movement will be applied in update loop
+        this.smoothedPlayerPosition.copy(minimapPos);
+    } else {
+        // Direct update
+        if (this.playerDot) {
+            this.playerDot.setLocalPosition(minimapPos.x, minimapPos.y, 0);
+        }
+    }
+};
+
+Minimap.prototype.smoothPlayerMovement = function(dt) {
+    if (!this.playerDot) return;
+    
+    const currentPos = this.playerDot.getLocalPosition();
+    const targetPos = this.smoothedPlayerPosition;
+    
+    // Smooth interpolation
+    const smoothing = 5.0; // Smoothing factor
+    const newPos = new pc.Vec3().lerp(currentPos, targetPos, dt * smoothing);
+    
+    this.playerDot.setLocalPosition(newPos.x, newPos.y, 0);
+};
+
+Minimap.prototype.updatePlayerRotation = function() {
+    if (!this.showPlayerDirection || !this.hudManager || !this.hudManager.playerEntity) return;
+    
+    // Get player's forward direction
+    const playerRotation = this.hudManager.playerEntity.getEulerAngles();
+    
+    // Apply rotation to player dot (if it has a directional indicator)
+    if (this.playerDot) {
+        this.playerDot.setLocalEulerAngles(0, 0, -playerRotation.y); // Negative for UI coordinate system
+    }
+};
+
+Minimap.prototype.updateEnemyPositions = function() {
+    if (!this.hudManager || !this.hudManager.playerEntity) return;
+    
+    const playerPos = this.hudManager.playerEntity.getPosition();
+    
+    // Get current enemies from game manager
+    this.refreshTrackedEntities();
+    
+    // Update active enemy dots
+    let dotIndex = 0;
+    
+    for (const enemy of this.trackedEnemies) {
+        if (!enemy.enabled || dotIndex >= this.enemyDotPool.length) continue;
+        
+        const enemyPos = enemy.getPosition();
+        const distance = playerPos.distance(enemyPos);
+        
+        // Skip enemies too far away
+        if (this.fadeEnemiesAtDistance && distance > this.maxEnemyDistance) {
+            continue;
+        }
+        
+        // Get or create enemy dot
+        const dotData = this.enemyDotPool[dotIndex];
+        const minimapPos = this.worldToMinimapPosition(enemyPos);
+        
+        // Position the dot
+        dotData.entity.setLocalPosition(minimapPos.x, minimapPos.y, 0);
+        dotData.entity.enabled = true;
+        dotData.inUse = true;
+        dotData.trackedEntity = enemy;
+        
+        // Fade based on distance
+        if (this.fadeEnemiesAtDistance) {
+            const fadeDistance = this.maxEnemyDistance * 0.7; // Start fading at 70% of max distance
+            const alpha = distance > fadeDistance ? 
+                Math.max(0.3, 1 - ((distance - fadeDistance) / (this.maxEnemyDistance - fadeDistance))) : 1;
+            
+            const color = dotData.entity.element.color;
+            dotData.entity.element.color = new pc.Color(color.r, color.g, color.b, alpha);
+        }
+        
+        dotIndex++;
+    }
+    
+    // Hide unused dots
+    for (let i = dotIndex; i < this.enemyDotPool.length; i++) {
+        const dotData = this.enemyDotPool[i];
+        dotData.entity.enabled = false;
+        dotData.inUse = false;
+        dotData.trackedEntity = null;
+    }
+};
+
+Minimap.prototype.updateMinimapRotation = function() {
+    if (!this.hudManager || !this.hudManager.playerEntity) return;
+    
+    const playerRotation = this.hudManager.playerEntity.getEulerAngles();
+    
+    // Rotate the minimap background (not the UI elements)
+    if (this.minimapBackground) {
+        this.minimapBackground.setLocalEulerAngles(0, 0, playerRotation.y);
+    }
+};
+
+Minimap.prototype.worldToMinimapPosition = function(worldPos) {
+    const bounds = this.worldBounds;
+    const mapSize = this.minimapSize / 2; // Radius
+    
+    // Normalize world position to 0-1 range
+    const normalizedX = (worldPos.x - bounds.minX) / (bounds.maxX - bounds.minX);
+    const normalizedZ = (worldPos.z - bounds.minZ) / (bounds.maxZ - bounds.minZ);
+    
+    // Convert to minimap coordinates (-mapSize to +mapSize)
+    const minimapX = (normalizedX - 0.5) * (mapSize * 2);
+    const minimapY = (normalizedZ - 0.5) * (mapSize * 2);
+    
+    return new pc.Vec3(minimapX, minimapY, 0);
+};
+
+Minimap.prototype.refreshTrackedEntities = function() {
+    // Clear current tracked enemies
+    this.trackedEnemies = [];
+    
+    // Find all AI agents or enemies
+    const allEntities = this.app.root.find(function(entity) {
+        // Look for entities with AI agent scripts or enemy tags
+        return (entity.script && entity.script.aiAgent) || 
+               (entity.tags && entity.tags.has('enemy'));
+    });
+    
+    for (const entity of allEntities) {
+        // Check if entity is alive and should be tracked
+        const healthSystem = entity.script && entity.script.healthSystem;
+        const isAlive = !healthSystem || !healthSystem.isDead;
+        
+        if (isAlive && entity !== this.hudManager.playerEntity) {
+            this.trackedEnemies.push(entity);
+        }
+    }
+};
+
+// Event handlers
+Minimap.prototype.onEntitySpawned = function(entity) {
+    // Add newly spawned enemies to tracking
+    if ((entity.script && entity.script.aiAgent) || (entity.tags && entity.tags.has('enemy'))) {
+        if (!this.trackedEnemies.includes(entity)) {
+            this.trackedEnemies.push(entity);
+        }
+    }
+};
+
+Minimap.prototype.onEntityDied = function(data) {
+    if (!data.entity) return;
+    
+    // Remove dead entity from tracking
+    const index = this.trackedEnemies.indexOf(data.entity);
+    if (index > -1) {
+        this.trackedEnemies.splice(index, 1);
+    }
+    
+    // Hide corresponding dot
+    for (const dotData of this.enemyDotPool) {
+        if (dotData.trackedEntity === data.entity) {
+            dotData.entity.enabled = false;
+            dotData.inUse = false;
+            dotData.trackedEntity = null;
+            break;
+        }
+    }
+};
+
+// Public methods
+Minimap.prototype.setWorldBounds = function(minX, maxX, minZ, maxZ) {
+    this.worldBounds.minX = minX;
+    this.worldBounds.maxX = maxX;
+    this.worldBounds.minZ = minZ;
+    this.worldBounds.maxZ = maxZ;
+    
+    console.log(`[Minimap] World bounds updated: (${minX}, ${minZ}) to (${maxX}, ${maxZ})`);
+};
+
+Minimap.prototype.addCustomMarker = function(worldPosition, color, size) {
+    // Create a custom marker at the specified world position
+    const marker = new pc.Entity('CustomMarker');
+    marker.addComponent('element', {
+        type: pc.ELEMENTTYPE_IMAGE,
+        anchor: new pc.Vec4(0.5, 0.5, 0.5, 0.5),
+        pivot: new pc.Vec2(0.5, 0.5),
+        width: size || this.enemyDotSize,
+        height: size || this.enemyDotSize,
+        color: color || new pc.Color(1, 1, 0) // Default yellow
+    });
+    
+    const minimapPos = this.worldToMinimapPosition(worldPosition);
+    marker.setLocalPosition(minimapPos.x, minimapPos.y, 0);
+    
+    if (this.enemyDots) {
+        this.enemyDots.addChild(marker);
+    }
+    
+    return marker;
+};
+
+Minimap.prototype.removeCustomMarker = function(marker) {
+    if (marker && marker.destroy) {
+        marker.destroy();
+    }
+};
+
+Minimap.prototype.toggleMinimap = function() {
+    const isVisible = this.entity.enabled;
+    this.entity.enabled = !isVisible;
+    console.log(`[Minimap] Minimap ${isVisible ? 'hidden' : 'shown'}`);
+};
+
+// Debug methods
+Minimap.prototype.debugAddTestEnemies = function() {
+    // Add some test enemies for debugging
+    for (let i = 0; i < 5; i++) {
+        const testPos = new pc.Vec3(
+            Math.random() * 100 - 50,
+            0,
+            Math.random() * 100 - 50
+        );
+        
+        this.addCustomMarker(testPos, new pc.Color(1, 0, 0), this.enemyDotSize);
+    }
+    
+    console.log('[Minimap] Added test enemy markers');
+};
+
+Minimap.prototype.debugShowPlayerBounds = function() {
+    const bounds = this.worldBounds;
+    console.log(`[Minimap] World bounds: X(${bounds.minX} to ${bounds.maxX}), Z(${bounds.minZ} to ${bounds.maxZ})`);
+    
+    if (this.hudManager && this.hudManager.playerEntity) {
+        const playerPos = this.hudManager.playerEntity.getPosition();
+        const minimapPos = this.worldToMinimapPosition(playerPos);
+        console.log(`[Minimap] Player world: (${playerPos.x.toFixed(1)}, ${playerPos.z.toFixed(1)}) -> minimap: (${minimapPos.x.toFixed(1)}, ${minimapPos.y.toFixed(1)})`);
+    }
+};

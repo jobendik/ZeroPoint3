@@ -1,0 +1,240 @@
+var HUDManager = pc.createScript('hudManager');
+
+// HUD Component References
+HUDManager.attributes.add('crosshair', { type: 'entity', title: 'Crosshair Entity' });
+HUDManager.attributes.add('healthBar', { type: 'entity', title: 'Health Bar Entity' });
+HUDManager.attributes.add('ammoDisplay', { type: 'entity', title: 'Ammo Display Entity' });
+HUDManager.attributes.add('weaponDisplay', { type: 'entity', title: 'Weapon Display Entity' });
+HUDManager.attributes.add('hitMarker', { type: 'entity', title: 'Hit Marker Entity' });
+HUDManager.attributes.add('damageOverlay', { type: 'entity', title: 'Damage Overlay Entity' });
+HUDManager.attributes.add('killFeed', { type: 'entity', title: 'Kill Feed Entity' });
+HUDManager.attributes.add('minimap', { type: 'entity', title: 'Minimap Entity' });
+
+// Player Reference
+HUDManager.attributes.add('playerEntity', { type: 'entity', title: 'Player Entity' });
+
+// HUD Settings
+HUDManager.attributes.add('updateInterval', { type: 'number', default: 0.1, title: 'Update Interval (seconds)' });
+HUDManager.attributes.add('enableMinimap', { type: 'boolean', default: true, title: 'Enable Minimap' });
+HUDManager.attributes.add('enableKillFeed', { type: 'boolean', default: true, title: 'Enable Kill Feed' });
+
+HUDManager.prototype.initialize = function() {
+    // Store references to player systems
+    this.playerWeaponSystem = null;
+    this.playerHealthSystem = null;
+    this.playerController = null;
+    
+    // HUD update timer
+    this.updateTimer = 0;
+    
+    // Wait for player to be ready
+    this.app.on('weaponSystem:ready', this.onPlayerReady, this);
+    
+    // Listen for game events
+    this.setupEventListeners();
+    
+    // Initialize HUD components
+    this.initializeComponents();
+    
+    // Global HUD reference
+    this.app.hudManager = this;
+    
+    console.log('[HUDManager] Initialized');
+};
+
+HUDManager.prototype.onPlayerReady = function(playerEntity) {
+    if (!this.playerEntity || playerEntity !== this.playerEntity) return;
+    
+    // Get player system references
+    this.playerWeaponSystem = this.playerEntity.script.weaponSystem;
+    this.playerHealthSystem = this.playerEntity.script.healthSystem;
+    this.playerController = this.playerEntity.script.characterController || this.playerEntity.script.player;
+    
+    console.log('[HUDManager] Player systems connected');
+};
+
+HUDManager.prototype.setupEventListeners = function() {
+    // Weapon events
+    this.app.on('weapon:fired', this.onWeaponFired, this);
+    
+    // Damage events
+    this.app.on('entity:damaged', this.onEntityDamaged, this);
+    this.app.on('entity:died', this.onEntityDied, this);
+    
+    // Audio events for hit confirmation
+    this.app.on('audio:play', this.onAudioPlay, this);
+};
+
+HUDManager.prototype.initializeComponents = function() {
+    // Initialize each HUD component
+    if (this.crosshair && this.crosshair.script.dynamicCrosshair) {
+        this.crosshair.script.dynamicCrosshair.setHUDManager(this);
+    }
+    
+    if (this.healthBar && this.healthBar.script.healthDisplay) {
+        this.healthBar.script.healthDisplay.setHUDManager(this);
+    }
+    
+    if (this.ammoDisplay && this.ammoDisplay.script.ammoDisplay) {
+        this.ammoDisplay.script.ammoDisplay.setHUDManager(this);
+    }
+    
+    if (this.weaponDisplay && this.weaponDisplay.script.weaponDisplay) {
+        this.weaponDisplay.script.weaponDisplay.setHUDManager(this);
+    }
+    
+    if (this.hitMarker && this.hitMarker.script.hitMarker) {
+        this.hitMarker.script.hitMarker.setHUDManager(this);
+    }
+    
+    if (this.damageOverlay && this.damageOverlay.script.damageOverlay) {
+        this.damageOverlay.script.damageOverlay.setHUDManager(this);
+    }
+    
+    if (this.killFeed && this.killFeed.script.killFeed && this.enableKillFeed) {
+        this.killFeed.script.killFeed.setHUDManager(this);
+    }
+    
+    if (this.minimap && this.minimap.script.minimap && this.enableMinimap) {
+        this.minimap.script.minimap.setHUDManager(this);
+    }
+};
+
+HUDManager.prototype.update = function(dt) {
+    this.updateTimer += dt;
+    
+    if (this.updateTimer >= this.updateInterval) {
+        this.updateHUD();
+        this.updateTimer = 0;
+    }
+};
+
+HUDManager.prototype.updateHUD = function() {
+    // Only update if we have valid player references
+    if (!this.playerWeaponSystem || !this.playerHealthSystem) {
+        this.tryConnectToPlayer();
+        return;
+    }
+    
+    // Update crosshair based on movement
+    this.updateCrosshairState();
+    
+    // Update weapon display
+    this.updateWeaponInfo();
+    
+    // Update health display
+    this.updateHealthInfo();
+    
+    // Update ammo display
+    this.updateAmmoInfo();
+};
+
+HUDManager.prototype.tryConnectToPlayer = function() {
+    if (!this.playerEntity) return;
+    
+    if (this.playerEntity.script.weaponSystem) {
+        this.playerWeaponSystem = this.playerEntity.script.weaponSystem;
+    }
+    
+    if (this.playerEntity.script.healthSystem) {
+        this.playerHealthSystem = this.playerEntity.script.healthSystem;
+    }
+    
+    if (this.playerEntity.script.characterController) {
+        this.playerController = this.playerEntity.script.characterController;
+    } else if (this.playerEntity.script.player) {
+        this.playerController = this.playerEntity.script.player;
+    }
+};
+
+HUDManager.prototype.updateCrosshairState = function() {
+    if (!this.crosshair || !this.crosshair.script.dynamicCrosshair) return;
+    
+    // Get movement state
+    let isMoving = false;
+    let isSprinting = false;
+    let isJumping = false;
+    
+    if (this.playerController && this.playerController.controller) {
+        const velocity = this.playerController.controller.getVelocity();
+        isMoving = velocity.length() > 0.5;
+        
+        if (this.playerController.controller.controls) {
+            isSprinting = this.playerController.controller.controls.sprint;
+            isJumping = this.playerController.controller.controls.jump;
+        }
+    }
+    
+    // Get current weapon
+    const currentWeapon = this.playerWeaponSystem ? this.playerWeaponSystem.currentWeapon : 'pistol';
+    
+    // Update crosshair
+    this.crosshair.script.dynamicCrosshair.updateState(currentWeapon, isMoving, isSprinting, isJumping);
+};
+
+HUDManager.prototype.updateWeaponInfo = function() {
+    if (this.weaponDisplay && this.weaponDisplay.script.weaponDisplay) {
+        const weaponInfo = this.playerWeaponSystem.getWeaponInfo();
+        this.weaponDisplay.script.weaponDisplay.updateWeapon(weaponInfo);
+    }
+};
+
+HUDManager.prototype.updateHealthInfo = function() {
+    if (this.healthBar && this.healthBar.script.healthDisplay) {
+        const healthPercent = this.playerHealthSystem.currentHealth / this.playerHealthSystem.maxHealth;
+        this.healthBar.script.healthDisplay.updateHealth(healthPercent, this.playerHealthSystem.currentHealth, this.playerHealthSystem.maxHealth);
+    }
+};
+
+HUDManager.prototype.updateAmmoInfo = function() {
+    if (this.ammoDisplay && this.ammoDisplay.script.ammoDisplay) {
+        const weaponInfo = this.playerWeaponSystem.getWeaponInfo();
+        this.ammoDisplay.script.ammoDisplay.updateAmmo(weaponInfo.currentMagazine, weaponInfo.totalAmmo, weaponInfo.isReloading);
+    }
+};
+
+// Event handlers
+HUDManager.prototype.onWeaponFired = function(data) {
+    // Show hit marker if we hit something
+    if (data.shotsHit > 0 && this.hitMarker && this.hitMarker.script.hitMarker) {
+        this.hitMarker.script.hitMarker.showHitMarker();
+    }
+};
+
+HUDManager.prototype.onEntityDamaged = function(data) {
+    // Show damage overlay if player was damaged
+    if (data.victim === this.playerEntity && this.damageOverlay && this.damageOverlay.script.damageOverlay) {
+        this.damageOverlay.script.damageOverlay.showDamageEffect(data.damage);
+    }
+};
+
+HUDManager.prototype.onEntityDied = function(data) {
+    // Add to kill feed if enabled
+    if (this.enableKillFeed && this.killFeed && this.killFeed.script.killFeed) {
+        const killerName = data.attacker ? data.attacker.name : 'Unknown';
+        const victimName = data.entity.name;
+        this.killFeed.script.killFeed.addKill(killerName, victimName);
+    }
+};
+
+HUDManager.prototype.onAudioPlay = function(data) {
+    // We can use this to sync visual effects with audio if needed
+};
+
+// Public methods for other systems
+HUDManager.prototype.showNotification = function(message, duration) {
+    // Could be used for pickup notifications, etc.
+    console.log('[HUD Notification]', message);
+};
+
+HUDManager.prototype.getPlayerPosition = function() {
+    return this.playerEntity ? this.playerEntity.getPosition() : new pc.Vec3();
+};
+
+HUDManager.prototype.getPlayerWeaponSystem = function() {
+    return this.playerWeaponSystem;
+};
+
+HUDManager.prototype.getPlayerHealthSystem = function() {
+    return this.playerHealthSystem;
+};

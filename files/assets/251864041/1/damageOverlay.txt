@@ -1,0 +1,412 @@
+var DamageOverlay = pc.createScript('damageOverlay');
+
+// Damage Overlay Elements
+DamageOverlay.attributes.add('damageOverlayImage', { type: 'entity', title: 'Damage Overlay Image' });
+DamageOverlay.attributes.add('lowHealthOverlay', { type: 'entity', title: 'Low Health Overlay (optional)' });
+DamageOverlay.attributes.add('criticalHealthOverlay', { type: 'entity', title: 'Critical Health Overlay (optional)' });
+
+// Overlay Textures
+DamageOverlay.attributes.add('damageTexture', { type: 'asset', assetType: 'texture', title: 'Damage Overlay Texture' });
+DamageOverlay.attributes.add('bloodTexture', { type: 'asset', assetType: 'texture', title: 'Blood Overlay Texture' });
+DamageOverlay.attributes.add('vignetteTexture', { type: 'asset', assetType: 'texture', title: 'Vignette Texture' });
+
+// Visual Settings
+DamageOverlay.attributes.add('maxDamageOpacity', { type: 'number', default: 0.8, min: 0, max: 1, title: 'Max Damage Opacity' });
+DamageOverlay.attributes.add('lowHealthOpacity', { type: 'number', default: 0.3, min: 0, max: 1, title: 'Low Health Opacity' });
+DamageOverlay.attributes.add('criticalHealthOpacity', { type: 'number', default: 0.6, min: 0, max: 1, title: 'Critical Health Opacity' });
+
+// Color Settings
+DamageOverlay.attributes.add('damageColor', { type: 'rgb', default: [1, 0, 0], title: 'Damage Flash Color' });
+DamageOverlay.attributes.add('lowHealthColor', { type: 'rgb', default: [1, 0.2, 0.2], title: 'Low Health Color' });
+DamageOverlay.attributes.add('criticalHealthColor', { type: 'rgb', default: [0.8, 0, 0], title: 'Critical Health Color' });
+
+// Animation Settings
+DamageOverlay.attributes.add('damageFlashDuration', { type: 'number', default: 0.5, title: 'Damage Flash Duration' });
+DamageOverlay.attributes.add('fadeInSpeed', { type: 'number', default: 8.0, title: 'Fade In Speed' });
+DamageOverlay.attributes.add('fadeOutSpeed', { type: 'number', default: 3.0, title: 'Fade Out Speed' });
+DamageOverlay.attributes.add('pulseSpeed', { type: 'number', default: 2.0, title: 'Health Pulse Speed' });
+
+// Health Thresholds
+DamageOverlay.attributes.add('lowHealthThreshold', { type: 'number', default: 0.3, title: 'Low Health Threshold' });
+DamageOverlay.attributes.add('criticalHealthThreshold', { type: 'number', default: 0.15, title: 'Critical Health Threshold' });
+
+// Behavior Settings
+DamageOverlay.attributes.add('enablePulse', { type: 'boolean', default: true, title: 'Enable Health Pulse' });
+DamageOverlay.attributes.add('enableDirectionalDamage', { type: 'boolean', default: true, title: 'Enable Directional Damage' });
+DamageOverlay.attributes.add('shakeOnDamage', { type: 'boolean', default: true, title: 'Screen Shake on Damage' });
+DamageOverlay.attributes.add('shakeIntensity', { type: 'number', default: 5.0, title: 'Screen Shake Intensity' });
+
+DamageOverlay.prototype.initialize = function() {
+    // State tracking
+    this.currentHealthPercent = 1.0;
+    this.isDamageActive = false;
+    this.isLowHealthActive = false;
+    this.isCriticalHealthActive = false;
+    
+    // Animation state
+    this.damageFlashTimer = 0;
+    this.pulseTimer = 0;
+    this.currentDamageOpacity = 0;
+    this.targetDamageOpacity = 0;
+    
+    // HUD Manager reference
+    this.hudManager = null;
+    
+    // Directional damage tracking
+    this.damageDirection = new pc.Vec3();
+    this.lastDamagePosition = null;
+    
+    this.initializeElements();
+    this.hideAllOverlays();
+    
+    // Listen for damage events
+    this.app.on('entity:damaged', this.onEntityDamaged, this);
+    
+    console.log('[DamageOverlay] Initialized');
+};
+
+DamageOverlay.prototype.setHUDManager = function(hudManager) {
+    this.hudManager = hudManager;
+};
+
+DamageOverlay.prototype.initializeElements = function() {
+    // Setup main damage overlay
+    if (this.damageOverlayImage && this.damageOverlayImage.element) {
+        this.setupOverlayElement(this.damageOverlayImage, this.damageTexture || this.bloodTexture);
+        this.damageOverlayImage.element.color = new pc.Color(
+            this.damageColor[0],
+            this.damageColor[1],
+            this.damageColor[2],
+            0
+        );
+    }
+    
+    // Setup low health overlay
+    if (this.lowHealthOverlay && this.lowHealthOverlay.element) {
+        this.setupOverlayElement(this.lowHealthOverlay, this.vignetteTexture || this.bloodTexture);
+        this.lowHealthOverlay.element.color = new pc.Color(
+            this.lowHealthColor[0],
+            this.lowHealthColor[1],
+            this.lowHealthColor[2],
+            0
+        );
+    }
+    
+    // Setup critical health overlay
+    if (this.criticalHealthOverlay && this.criticalHealthOverlay.element) {
+        this.setupOverlayElement(this.criticalHealthOverlay, this.bloodTexture);
+        this.criticalHealthOverlay.element.color = new pc.Color(
+            this.criticalHealthColor[0],
+            this.criticalHealthColor[1],
+            this.criticalHealthColor[2],
+            0
+        );
+    }
+};
+
+DamageOverlay.prototype.setupOverlayElement = function(element, texture) {
+    if (!element || !element.element) return;
+    
+    // Make the overlay cover the full screen
+    element.element.anchor = new pc.Vec4(0, 0, 1, 1);
+    element.element.margin = new pc.Vec4(0, 0, 0, 0);
+    
+    // Set texture if provided
+    if (texture && texture.resource) {
+        element.element.texture = texture.resource;
+    }
+    
+    // Ensure proper blending for overlay effect
+    element.element.opacity = 0;
+};
+
+DamageOverlay.prototype.update = function(dt) {
+    // Update damage flash
+    if (this.isDamageActive) {
+        this.updateDamageFlash(dt);
+    }
+    
+    // Update health-based overlays
+    this.updateHealthOverlays(dt);
+    
+    // Smooth opacity transitions
+    this.updateOpacityTransitions(dt);
+};
+
+DamageOverlay.prototype.showDamageEffect = function(damageAmount, damagePosition) {
+    // Calculate damage intensity based on amount
+    const damageIntensity = Math.min(damageAmount / 100, 1.0); // Normalize to 0-1
+    const flashOpacity = this.maxDamageOpacity * damageIntensity;
+    
+    // Store damage position for directional effects
+    if (damagePosition && this.enableDirectionalDamage) {
+        this.lastDamagePosition = damagePosition.clone();
+    }
+    
+    // Trigger damage flash
+    this.triggerDamageFlash(flashOpacity);
+    
+    // Screen shake effect
+    if (this.shakeOnDamage) {
+        this.triggerScreenShake(damageAmount);
+    }
+    
+    console.log(`[DamageOverlay] Damage effect shown (amount: ${damageAmount}, intensity: ${damageIntensity.toFixed(2)})`);
+};
+
+DamageOverlay.prototype.triggerDamageFlash = function(opacity) {
+    this.isDamageActive = true;
+    this.damageFlashTimer = 0;
+    this.targetDamageOpacity = opacity;
+    
+    // Immediately show the damage overlay
+    if (this.damageOverlayImage && this.damageOverlayImage.element) {
+        this.damageOverlayImage.enabled = true;
+        this.currentDamageOpacity = opacity;
+        this.damageOverlayImage.element.color = new pc.Color(
+            this.damageColor[0],
+            this.damageColor[1],
+            this.damageColor[2],
+            opacity
+        );
+    }
+};
+
+DamageOverlay.prototype.updateDamageFlash = function(dt) {
+    this.damageFlashTimer += dt;
+    
+    if (this.damageFlashTimer >= this.damageFlashDuration) {
+        // Damage flash complete
+        this.isDamageActive = false;
+        this.targetDamageOpacity = 0;
+        this.damageFlashTimer = 0;
+    } else {
+        // Fade out the damage flash
+        const fadeProgress = this.damageFlashTimer / this.damageFlashDuration;
+        const currentOpacity = this.targetDamageOpacity * (1 - fadeProgress);
+        this.currentDamageOpacity = currentOpacity;
+        
+        if (this.damageOverlayImage && this.damageOverlayImage.element) {
+            this.damageOverlayImage.element.color = new pc.Color(
+                this.damageColor[0],
+                this.damageColor[1],
+                this.damageColor[2],
+                currentOpacity
+            );
+        }
+    }
+    
+    // Hide overlay when fully faded
+    if (this.currentDamageOpacity <= 0.01 && this.damageOverlayImage) {
+        this.damageOverlayImage.enabled = false;
+    }
+};
+
+DamageOverlay.prototype.updateHealthOverlays = function(dt) {
+    if (!this.hudManager) return;
+    
+    const healthSystem = this.hudManager.getPlayerHealthSystem();
+    if (!healthSystem) return;
+    
+    this.currentHealthPercent = healthSystem.currentHealth / healthSystem.maxHealth;
+    
+    // Update low health overlay
+    if (this.currentHealthPercent <= this.lowHealthThreshold && this.currentHealthPercent > this.criticalHealthThreshold) {
+        this.showLowHealthOverlay(dt);
+    } else {
+        this.hideLowHealthOverlay();
+    }
+    
+    // Update critical health overlay
+    if (this.currentHealthPercent <= this.criticalHealthThreshold) {
+        this.showCriticalHealthOverlay(dt);
+    } else {
+        this.hideCriticalHealthOverlay();
+    }
+};
+
+DamageOverlay.prototype.showLowHealthOverlay = function(dt) {
+    if (!this.lowHealthOverlay || !this.lowHealthOverlay.element) return;
+    
+    this.isLowHealthActive = true;
+    this.lowHealthOverlay.enabled = true;
+    
+    if (this.enablePulse) {
+        this.pulseTimer += dt * this.pulseSpeed;
+        const pulseIntensity = 0.5 + 0.5 * (Math.sin(this.pulseTimer) * 0.5 + 0.5);
+        const opacity = this.lowHealthOpacity * pulseIntensity;
+        
+        this.lowHealthOverlay.element.color = new pc.Color(
+            this.lowHealthColor[0],
+            this.lowHealthColor[1],
+            this.lowHealthColor[2],
+            opacity
+        );
+    } else {
+        this.lowHealthOverlay.element.color = new pc.Color(
+            this.lowHealthColor[0],
+            this.lowHealthColor[1],
+            this.lowHealthColor[2],
+            this.lowHealthOpacity
+        );
+    }
+};
+
+DamageOverlay.prototype.hideLowHealthOverlay = function() {
+    if (!this.isLowHealthActive) return;
+    
+    this.isLowHealthActive = false;
+    if (this.lowHealthOverlay) {
+        this.lowHealthOverlay.enabled = false;
+    }
+};
+
+DamageOverlay.prototype.showCriticalHealthOverlay = function(dt) {
+    if (!this.criticalHealthOverlay || !this.criticalHealthOverlay.element) return;
+    
+    this.isCriticalHealthActive = true;
+    this.criticalHealthOverlay.enabled = true;
+    
+    if (this.enablePulse) {
+        this.pulseTimer += dt * this.pulseSpeed * 1.5; // Faster pulse for critical health
+        const pulseIntensity = 0.4 + 0.6 * (Math.sin(this.pulseTimer) * 0.5 + 0.5);
+        const opacity = this.criticalHealthOpacity * pulseIntensity;
+        
+        this.criticalHealthOverlay.element.color = new pc.Color(
+            this.criticalHealthColor[0],
+            this.criticalHealthColor[1],
+            this.criticalHealthColor[2],
+            opacity
+        );
+    } else {
+        this.criticalHealthOverlay.element.color = new pc.Color(
+            this.criticalHealthColor[0],
+            this.criticalHealthColor[1],
+            this.criticalHealthColor[2],
+            this.criticalHealthOpacity
+        );
+    }
+};
+
+DamageOverlay.prototype.hideCriticalHealthOverlay = function() {
+    if (!this.isCriticalHealthActive) return;
+    
+    this.isCriticalHealthActive = false;
+    if (this.criticalHealthOverlay) {
+        this.criticalHealthOverlay.enabled = false;
+    }
+};
+
+DamageOverlay.prototype.updateOpacityTransitions = function(dt) {
+    // Smooth opacity changes for better visual experience
+    // This could be expanded for more sophisticated blending
+};
+
+DamageOverlay.prototype.triggerScreenShake = function(damageAmount) {
+    if (!this.shakeOnDamage) return;
+    
+    // Calculate shake intensity based on damage
+    const shakeIntensity = Math.min(damageAmount / 50, 1.0) * this.shakeIntensity;
+    
+    // Apply screen shake to the camera
+    const camera = this.app.root.findByName('Camera');
+    if (!camera) return;
+    
+    const originalPosition = camera.getLocalPosition().clone();
+    const shakeDuration = 0.3;
+    let shakeTime = 0;
+    
+    const shakeInterval = setInterval(() => {
+        shakeTime += 1/60; // Assume 60 FPS
+        
+        if (shakeTime >= shakeDuration) {
+            // Restore original position
+            camera.setLocalPosition(originalPosition);
+            clearInterval(shakeInterval);
+            return;
+        }
+        
+        // Decay shake intensity over time
+        const decayFactor = 1 - (shakeTime / shakeDuration);
+        const currentIntensity = shakeIntensity * decayFactor;
+        
+        // Random shake offset
+        const shakeX = (Math.random() - 0.5) * currentIntensity;
+        const shakeY = (Math.random() - 0.5) * currentIntensity;
+        const shakeZ = (Math.random() - 0.5) * currentIntensity * 0.5;
+        
+        camera.setLocalPosition(
+            originalPosition.x + shakeX,
+            originalPosition.y + shakeY,
+            originalPosition.z + shakeZ
+        );
+        
+    }, 1000/60); // 60 FPS
+};
+
+DamageOverlay.prototype.hideAllOverlays = function() {
+    this.isDamageActive = false;
+    this.isLowHealthActive = false;
+    this.isCriticalHealthActive = false;
+    
+    if (this.damageOverlayImage) {
+        this.damageOverlayImage.enabled = false;
+    }
+    
+    if (this.lowHealthOverlay) {
+        this.lowHealthOverlay.enabled = false;
+    }
+    
+    if (this.criticalHealthOverlay) {
+        this.criticalHealthOverlay.enabled = false;
+    }
+};
+
+// Event handlers
+DamageOverlay.prototype.onEntityDamaged = function(data) {
+    // Only show damage overlay for player damage
+    if (!this.hudManager || data.victim !== this.hudManager.playerEntity) return;
+    
+    this.showDamageEffect(data.damage, data.position);
+};
+
+// Public methods for direct control
+DamageOverlay.prototype.showHealEffect = function() {
+    // Brief green flash when healing
+    if (!this.damageOverlayImage || !this.damageOverlayImage.element) return;
+    
+    const originalColor = this.damageOverlayImage.element.color.clone();
+    
+    this.damageOverlayImage.enabled = true;
+    this.damageOverlayImage.element.color = new pc.Color(0, 1, 0, 0.3); // Green flash
+    
+    setTimeout(() => {
+        if (this.damageOverlayImage) {
+            this.damageOverlayImage.element.color = originalColor;
+            this.damageOverlayImage.enabled = false;
+        }
+    }, 200);
+};
+
+DamageOverlay.prototype.setHealthPercent = function(healthPercent) {
+    this.currentHealthPercent = Math.max(0, Math.min(1, healthPercent));
+};
+
+// Test methods
+DamageOverlay.prototype.testDamageEffect = function(damageAmount) {
+    damageAmount = damageAmount || 25;
+    this.showDamageEffect(damageAmount);
+    console.log(`[DamageOverlay] Test damage effect triggered (${damageAmount} damage)`);
+};
+
+DamageOverlay.prototype.testHealthOverlays = function() {
+    // Simulate low health
+    this.currentHealthPercent = 0.2;
+    console.log('[DamageOverlay] Testing health overlays - set to 20% health');
+    
+    // Reset after 5 seconds
+    setTimeout(() => {
+        this.currentHealthPercent = 1.0;
+        console.log('[DamageOverlay] Health overlays test complete - reset to full health');
+    }, 5000);
+};
